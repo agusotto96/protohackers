@@ -34,9 +34,8 @@ async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
             return Ok(());
         }
         let output = deserialize_request(&input)
-            .map(process_request)
-            .map(serialize_response)
-            .unwrap_or(BAD_OUTPUT.into());
+            .map(|r| process_request(&r))
+            .map_or(BAD_OUTPUT.into(), |r| serialize_response(&r));
         w_socket.write_all(&output).await?;
         if output == BAD_OUTPUT {
             return Ok(());
@@ -48,14 +47,14 @@ fn deserialize_request(bytes: &[u8]) -> Option<Request> {
     serde_json::from_slice(bytes).ok()
 }
 
-fn process_request(request: Request) -> Response {
+fn process_request(request: &Request) -> Response {
     Response {
         method: Method::IsPrime,
         prime: is_prime(request.number),
     }
 }
 
-fn serialize_response(response: Response) -> Vec<u8> {
+fn serialize_response(response: &Response) -> Vec<u8> {
     let mut bytes = serde_json::to_vec(&response).unwrap();
     bytes.push(EOR);
     bytes
@@ -65,19 +64,18 @@ fn is_prime(number: f64) -> bool {
     if number != number.trunc() {
         return false;
     }
-    let number = number as u64;
-    if number == 2 || number == 3 {
+    if number == 2.0 || number == 3.0 {
         return true;
     }
-    if number <= 1 || number % 2 == 0 || number % 3 == 0 {
+    if number <= 1.0 || number % 2.0 == 0.0 || number % 3.0 == 0.0 {
         return false;
     }
-    let mut i = 5;
+    let mut i = 5.0;
     while i * i <= number {
-        if number % i == 0 || number % (i + 2) == 0 {
+        if number % i == 0.0 || number % (i + 2.0) == 0.0 {
             return false;
         }
-        i += 6;
+        i += 6.0;
     }
     true
 }
