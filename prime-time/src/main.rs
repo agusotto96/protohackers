@@ -11,6 +11,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
+
 const EOR: u8 = b'\n';
 
 const BAD_OUTPUT: &[u8] = &[b'n', b'o', b'p', b'e', EOR];
@@ -39,11 +40,6 @@ async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
         let output = deserialize_request(&input)
             .map(|r| process_request(&r))
             .map_or(BAD_OUTPUT.into(), |r| serialize_response(&r));
-        println!(
-            "req: {:?}, res: {:?}",
-            String::from_utf8_lossy(&input),
-            String::from_utf8_lossy(&output)
-        );
         w_socket.write_all(&output).await?;
         if output == BAD_OUTPUT {
             return Ok(());
