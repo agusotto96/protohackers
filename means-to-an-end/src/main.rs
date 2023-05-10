@@ -1,4 +1,5 @@
 use std::env;
+use std::net::SocketAddr;
 use tokio::io;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -11,14 +12,14 @@ async fn main() -> io::Result<()> {
     let address = env::args().nth(1).unwrap_or("0.0.0.0:8080".into());
     let listener = TcpListener::bind(address).await?;
     loop {
-        let (socket, _) = listener.accept().await?;
+        let (socket, client) = listener.accept().await?;
         tokio::spawn(async move {
-            let _ = process_socket(socket).await;
+            let _ = process_socket(socket, client).await;
         });
     }
 }
 
-async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
+async fn process_socket(mut socket: TcpStream, client: SocketAddr) -> io::Result<()> {
     let (r_socket, mut w_socket) = socket.split();
     let mut reader = BufReader::new(r_socket);
     let mut inserts: Vec<(i32, i32)> = Vec::new();
@@ -31,6 +32,7 @@ async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
         if let Some(message) = deserialize_message(&input) {
             match message {
                 Message::Insert { timestamp, price } => {
+                    println!("(c:{:?}, im: {:?})", &client, &message);
                     inserts.push((timestamp, price));
                 }
                 Message::Query { min_time, max_time } => {
@@ -40,15 +42,21 @@ async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
                         .copied()
                         .collect();
                     let sum: i128 = inserts.iter().map(|(_, p)| i128::from(*p)).sum();
-                    let mean = if inserts.is_empty() || min_time > max_time {
+                    let mean: i32 = if inserts.is_empty() || min_time > max_time {
                         0
                     } else {
-                        sum / i128::try_from(inserts.len()).unwrap()
+                        i32::try_from(sum / i128::try_from(inserts.len()).unwrap()).unwrap()
                     };
                     let output = mean.to_be_bytes();
+                    println!(
+                        "(c:{:?}, i: {:?}, qm: {:?}, m: {:?})",
+                        &client, &inserts, &message, &mean
+                    );
                     w_socket.write_all(&output).await?;
                 }
             }
+        } else {
+            return Ok(());
         }
     }
 }
