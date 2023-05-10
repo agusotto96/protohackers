@@ -34,18 +34,18 @@ async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
                     inserts.push((timestamp, price));
                 }
                 Message::Query { min_time, max_time } => {
-                    let inserts_in_range: Vec<(i32, i32)> = inserts
+                    let inserts: Vec<(i32, i32)> = inserts
                         .iter()
                         .filter(|(t, _)| min_time <= *t && *t <= max_time)
                         .copied()
                         .collect();
-                    let price_sum: i32 = inserts_in_range.iter().map(|(_, p)| *p).sum();
-                    let mean_price = if inserts_in_range.is_empty() || min_time > max_time {
+                    let sum: i128 = inserts.iter().map(|(_, p)| i128::from(*p)).sum();
+                    let mean = if inserts.is_empty() || min_time > max_time {
                         0
                     } else {
-                        price_sum / inserts_in_range.len() as i32
+                        sum / i128::try_from(inserts.len()).unwrap()
                     };
-                    let output = mean_price.to_be_bytes();
+                    let output = mean.to_be_bytes();
                     w_socket.write_all(&output).await?;
                 }
             }
