@@ -1,5 +1,5 @@
-use num_primes::BigUint;
-use num_primes::Verification;
+use num_bigint::BigUint;
+use num_prime::nt_funcs;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Number;
@@ -11,7 +11,6 @@ use tokio::io::AsyncWriteExt;
 use tokio::io::BufReader;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
-
 const EOR: u8 = b'\n';
 
 const BAD_OUTPUT: &[u8] = &[b'n', b'o', b'p', b'e', EOR];
@@ -70,7 +69,16 @@ fn serialize_response(response: &Response) -> Vec<u8> {
 }
 
 fn is_prime(number: &Number) -> bool {
-    BigUint::from_str(&number.to_string()).map_or(false, |n| Verification::is_prime(&n))
+    let number = number.to_string();
+    let (integer, fractional) = number.split_once(|c| c == '.').unwrap_or((&number, ""));
+    if integer.starts_with('-') {
+        return false;
+    }
+    if fractional.contains(|d| d != '0') {
+        return false;
+    }
+    let integer = BigUint::from_str(integer).unwrap();
+    nt_funcs::is_prime(&integer, None).probably()
 }
 
 #[derive(Serialize, Deserialize)]
