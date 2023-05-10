@@ -1,6 +1,10 @@
+use num_primes::BigUint;
+use num_primes::Verification;
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::Number;
 use std::env;
+use std::str::FromStr;
 use tokio::io;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -50,7 +54,7 @@ fn deserialize_request(bytes: &[u8]) -> Option<Request> {
 fn process_request(request: &Request) -> Response {
     Response {
         method: Method::IsPrime,
-        prime: is_prime(request.number),
+        prime: is_prime(&request.number),
     }
 }
 
@@ -60,30 +64,14 @@ fn serialize_response(response: &Response) -> Vec<u8> {
     bytes
 }
 
-fn is_prime(number: f64) -> bool {
-    if number != number.trunc() {
-        return false;
-    }
-    if number == 2.0 || number == 3.0 {
-        return true;
-    }
-    if number <= 1.0 || number % 2.0 == 0.0 || number % 3.0 == 0.0 {
-        return false;
-    }
-    let mut i = 5.0;
-    while i * i <= number {
-        if number % i == 0.0 || number % (i + 2.0) == 0.0 {
-            return false;
-        }
-        i += 6.0;
-    }
-    true
+fn is_prime(number: &Number) -> bool {
+    BigUint::from_str(&number.to_string()).map_or(false, |n| Verification::is_prime(&n))
 }
 
 #[derive(Serialize, Deserialize)]
 struct Request {
     method: Method,
-    number: f64,
+    number: Number,
 }
 
 #[derive(Serialize, Deserialize)]
