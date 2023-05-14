@@ -28,10 +28,9 @@ async fn main() -> io::Result<()> {
         let client = client.to_string();
         let reader = BufReader::new(reader);
         let tx = tx.clone();
-        let rx = tx.subscribe();
         let active_users = active_users.clone();
         spawn(async move {
-            let _ = process_socket(reader, writer, client, tx, rx, active_users).await;
+            let _ = process_socket(reader, writer, client, tx, active_users).await;
         });
     }
 }
@@ -41,7 +40,6 @@ async fn process_socket(
     mut writer: OwnedWriteHalf,
     client: String,
     tx: Sender<Message>,
-    rx: Receiver<Message>,
     active_users: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let Some(name) = ask_name(&mut reader, &mut writer).await? else { return Ok(()) };
@@ -65,6 +63,7 @@ async fn process_socket(
         value: format!("* {} has entered the room", name.clone()),
         is_chat: false,
     };
+    let rx = tx.subscribe();
     tx.send(message).unwrap();
     writer.write_all(&welcome_message).await?;
     let r_name = name.clone();
