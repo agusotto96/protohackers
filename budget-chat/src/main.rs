@@ -14,141 +14,63 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::Sender;
 use tokio::task::spawn;
 
-const EOM: u8 = b'\n';
-
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
     let listener = TcpListener::bind(address).await?;
-    let (tx, _) = channel::<Message>(50);
-    let active_users = Arc::new(Mutex::new(HashSet::new()));
+    let (msg_sender, _) = channel::<Message>(50);
+    let logged_names = Arc::new(Mutex::new(HashSet::new()));
     loop {
-        let (socket, client) = listener.accept().await?;
-        let (reader, writer) = socket.into_split();
-        let client = client.to_string();
-        let reader = BufReader::new(reader);
-        let tx = tx.clone();
-        let active_users = active_users.clone();
+        let (stream, _) = listener.accept().await?;
+        let (r_stream, w_stream) = stream.into_split();
+        let r_stream = RStream::new(r_stream);
+        let w_stream = WStream::new(w_stream);
+        let msg_sender = msg_sender.clone();
+        let logged_names = logged_names.clone();
         spawn(async move {
-            let _ = process_socket(reader, writer, client, tx, active_users).await;
+            let _ = process_connection(r_stream, w_stream, msg_sender, logged_names).await;
         });
     }
 }
 
-async fn process_socket(
-    mut reader: BufReader<OwnedReadHalf>,
-    mut writer: OwnedWriteHalf,
-    client: String,
-    tx: Sender<Message>,
-    active_users: Arc<Mutex<HashSet<String>>>,
+async fn process_connection(
+    mut r_stream: RStream,
+    mut w_stream: WStream,
+    msg_sender: Sender<Message>,
+    logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
-    let Some(name) = ask_name(&mut reader, &mut writer).await? else { return Ok(()) };
-    let welcome_message = {
-        let mut active_users = active_users.lock().unwrap();
-        let names = active_users
-            .iter()
-            .cloned()
-            .collect::<Vec<String>>()
-            .join(", ");
-        if !active_users.insert(name.clone()) {
-            return Ok(());
-        }
-        let mut welcome_message = format!("* The room contains: {names}").into_bytes();
-        welcome_message.push(EOM);
-        welcome_message
-    };
-    let message = Message {
-        name: name.clone(),
-        client: client.clone(),
-        value: format!("* {} has entered the room", name.clone()),
-        is_chat: false,
-    };
-    let rx = tx.subscribe();
-    tx.send(message).unwrap();
-    writer.write_all(&welcome_message).await?;
-    let r_name = name.clone();
-    let r_client = client.clone();
-    spawn(async move {
-        let _ = read_message(&mut reader, tx, r_name, r_client, active_users).await;
-    });
-    spawn(async move {
-        let _ = write_message(&mut writer, rx, client).await;
-    });
+    let Some(name) = ask_name(&mut r_stream, &mut w_stream).await? else { return Ok(()) };
+    let Some(log_in_msg) = log_in(&logged_names, &name) else { return Ok(()) };
+    w_stream.write(&log_in_msg).await?;
+    let new_user_msg = build_new_user_msg(&name);
+    let msg_receiver = msg_sender.subscribe();
+    msg_sender.send(new_user_msg).unwrap();
+    {
+        let name = name.clone();
+        spawn(async move {
+            let _ = read_msgs(r_stream, msg_sender, name, logged_names).await;
+        });
+    }
+    {
+        let name = name.clone();
+        spawn(async move {
+            let _ = write_msgs(w_stream, msg_receiver, name).await;
+        });
+    }
     Ok(())
 }
 
-async fn ask_name(
-    reader: &mut BufReader<OwnedReadHalf>,
-    writer: &mut OwnedWriteHalf,
-) -> io::Result<Option<String>> {
-    writer
-        .write_all(b"Welcome to budgetchat! What shall I call you?\n")
-        .await?;
-    let mut input = Vec::new();
-    let n = reader.read_until(EOM, &mut input).await?;
-    if n == 0 {
-        return Ok(None);
-    }
-    input.pop();
-    let name = deserialize_name(input);
+async fn ask_name(r_stream: &mut RStream, w_stream: &mut WStream) -> io::Result<Option<String>> {
+    w_stream.write(&build_welcome_msg()).await?;
+    let name = r_stream.read().await?.and_then(parse_name);
     Ok(name)
 }
 
-async fn read_message(
-    reader: &mut BufReader<OwnedReadHalf>,
-    tx: Sender<Message>,
-    name: String,
-    client: String,
-    active_users: Arc<Mutex<HashSet<String>>>,
-) -> io::Result<()> {
-    loop {
-        let mut input = Vec::new();
-        let n = reader.read_until(EOM, &mut input).await?;
-        if n == 0 {
-            let message = Message {
-                name: name.clone(),
-                client: client.clone(),
-                value: format!("* {} has left the room", name.clone()),
-                is_chat: false,
-            };
-            let mut active_users = active_users.lock().unwrap();
-            active_users.remove(&name);
-            tx.send(message).unwrap();
-            return Ok(());
-        }
-        input.pop();
-        if let Some(value) = deserialize_message(input) {
-            let message = Message {
-                name: name.clone(),
-                client: client.clone(),
-                value,
-                is_chat: true,
-            };
-            tx.send(message).unwrap();
-        }
-    }
+fn build_welcome_msg() -> String {
+    "Welcome to budgetchat! What shall I call you?".to_owned()
 }
 
-async fn write_message(
-    writer: &mut OwnedWriteHalf,
-    mut rx: Receiver<Message>,
-    client: String,
-) -> io::Result<()> {
-    loop {
-        let message = rx.recv().await.unwrap();
-        if message.client != client {
-            let mut bytes = if message.is_chat {
-                format!("[{}] {}", message.name, message.value).into_bytes()
-            } else {
-                message.value.into_bytes()
-            };
-            bytes.push(EOM);
-            writer.write_all(&bytes).await?;
-        }
-    }
-}
-
-fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
+fn parse_name(bytes: Vec<u8>) -> Option<String> {
     let name = String::from_utf8(bytes).ok()?;
     let name = name.replace('\r', "");
     if name.is_empty() {
@@ -163,22 +85,131 @@ fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
     Some(name)
 }
 
-fn deserialize_message(bytes: Vec<u8>) -> Option<String> {
-    let message = String::from_utf8(bytes).ok()?;
-    let message = message.replace('\r', "");
-    if message.is_empty() {
+fn log_in(logged_names: &Arc<Mutex<HashSet<String>>>, name: &str) -> Option<String> {
+    let mut logged_names = logged_names.lock().unwrap();
+    let log_in_msg = build_log_in_msg(&logged_names);
+    if !logged_names.insert(name.to_owned()) {
         return None;
     }
-    if !message.is_ascii() {
+    Some(log_in_msg)
+}
+
+fn build_log_in_msg(logged_names: &HashSet<String>) -> String {
+    let logged_names = logged_names
+        .iter()
+        .cloned()
+        .collect::<Vec<String>>()
+        .join(", ");
+    format!("* The room contains: {logged_names}")
+}
+
+fn build_new_user_msg(name: &str) -> Message {
+    Message {
+        name: name.to_owned(),
+        value: format!("* {name} has entered the room"),
+    }
+}
+
+async fn read_msgs(
+    mut r_stream: RStream,
+    msg_sender: Sender<Message>,
+    name: String,
+    logged_names: Arc<Mutex<HashSet<String>>>,
+) -> io::Result<()> {
+    loop {
+        let Some(bytes) = r_stream.read().await? else {
+            let log_out_msg = log_out(&name, &logged_names);
+            msg_sender.send(log_out_msg).unwrap();
+            return Ok(());
+        };
+        if let Some(chat_msg) = parse_chat_msg(bytes, &name) {
+            msg_sender.send(chat_msg).unwrap();
+        }
+    }
+}
+
+fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>) -> Message {
+    let mut logged_names = logged_names.lock().unwrap();
+    logged_names.remove(name);
+    build_log_out_msg(name)
+}
+
+fn build_log_out_msg(name: &str) -> Message {
+    Message {
+        name: name.to_owned(),
+        value: format!("* {name} has left the room"),
+    }
+}
+
+fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
+    let value = String::from_utf8(bytes).ok()?;
+    let value = value.replace('\r', "");
+    if value.is_empty() {
         return None;
     }
-    Some(message)
+    if !value.is_ascii() {
+        return None;
+    }
+    let msg = Message {
+        name: name.to_owned(),
+        value: format!("[{name}] {value}"),
+    };
+    Some(msg)
+}
+
+async fn write_msgs(
+    mut w_stream: WStream,
+    mut msg_receiver: Receiver<Message>,
+    name: String,
+) -> io::Result<()> {
+    loop {
+        let msg = msg_receiver.recv().await.unwrap();
+        if msg.name != name {
+            w_stream.write(&msg.value).await?;
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
 struct Message {
     name: String,
-    client: String,
     value: String,
-    is_chat: bool,
 }
+
+struct RStream {
+    r_stream: BufReader<OwnedReadHalf>,
+}
+
+impl RStream {
+    fn new(r_stream: OwnedReadHalf) -> Self {
+        Self {
+            r_stream: BufReader::new(r_stream),
+        }
+    }
+    async fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let mut bytes = Vec::new();
+        let n = self.r_stream.read_until(EOM, &mut bytes).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        bytes.pop();
+        Ok(Some(bytes))
+    }
+}
+
+struct WStream {
+    w_stream: OwnedWriteHalf,
+}
+
+impl WStream {
+    fn new(w_stream: OwnedWriteHalf) -> Self {
+        Self { w_stream }
+    }
+    async fn write(&mut self, value: &str) -> io::Result<()> {
+        let mut bytes = value.as_bytes().to_vec();
+        bytes.push(EOM);
+        self.w_stream.write_all(&bytes).await
+    }
+}
+
+const EOM: u8 = b'\n';
