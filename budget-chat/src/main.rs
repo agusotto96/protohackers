@@ -40,7 +40,7 @@ async fn process_connection(
     logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let Some(name) = ask_name(&mut r_stream, &mut w_stream).await? else { return Ok(()) };
-    let Some(room_msg) = room_msg(&logged_names, &name) else { return Ok(()) };
+    let Some(room_msg) = log_in(&logged_names, &name) else { return Ok(()) };
     w_stream.write(&room_msg).await?;
     let new_user_msg = new_user_msg(&name);
     let msg_receiver = msg_sender.subscribe();
@@ -62,8 +62,7 @@ async fn process_connection(
 
 async fn ask_name(r_stream: &mut RStream, w_stream: &mut WStream) -> io::Result<Option<String>> {
     w_stream.write(&welcome_msg()).await?;
-    let Some(input) = r_stream.read().await? else { return Ok(None); };
-    let name = deserialize_name(input);
+    let name = r_stream.read().await?.and_then(parse_name);
     Ok(name)
 }
 
@@ -71,7 +70,7 @@ fn welcome_msg() -> String {
     "Welcome to budgetchat! What shall I call you?".to_owned()
 }
 
-fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
+fn parse_name(bytes: Vec<u8>) -> Option<String> {
     let name = String::from_utf8(bytes).ok()?;
     let name = name.replace('\r', "");
     if name.is_empty() {
@@ -86,17 +85,22 @@ fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
     Some(name)
 }
 
-fn room_msg(logged_names: &Arc<Mutex<HashSet<String>>>, name: &str) -> Option<String> {
+fn log_in(logged_names: &Arc<Mutex<HashSet<String>>>, name: &str) -> Option<String> {
     let mut logged_names = logged_names.lock().unwrap();
-    let names = logged_names
+    let room_msg = room_msg(&logged_names);
+    if !logged_names.insert(name.to_owned()) {
+        return None;
+    }
+    Some(room_msg)
+}
+
+fn room_msg(logged_names: &HashSet<String>) -> String {
+    let logged_names = logged_names
         .iter()
         .cloned()
         .collect::<Vec<String>>()
         .join(", ");
-    if !logged_names.insert(name.to_owned()) {
-        return None;
-    }
-    Some(format!("* The room contains: {names}"))
+    format!("* The room contains: {logged_names}")
 }
 
 fn new_user_msg(name: &str) -> Message {
