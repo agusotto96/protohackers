@@ -20,16 +20,16 @@ const EOM: u8 = b'\n';
 async fn main() -> io::Result<()> {
     let address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
     let listener = TcpListener::bind(address).await?;
-    let (tx, _) = channel::<Message>(50);
+    let (sender, _) = channel::<Message>(50);
     let active_users = Arc::new(Mutex::new(HashSet::new()));
     loop {
         let (socket, _) = listener.accept().await?;
         let (reader, writer) = socket.into_split();
         let reader = BufReader::new(reader);
-        let tx = tx.clone();
+        let sender = sender.clone();
         let active_users = active_users.clone();
         spawn(async move {
-            let _ = process_socket(reader, writer, tx, active_users).await;
+            let _ = process_socket(reader, writer, sender, active_users).await;
         });
     }
 }
@@ -37,38 +37,26 @@ async fn main() -> io::Result<()> {
 async fn process_socket(
     mut reader: BufReader<OwnedReadHalf>,
     mut writer: OwnedWriteHalf,
-    tx: Sender<Message>,
+    sender: Sender<Message>,
     active_users: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let Some(name) = ask_name(&mut reader, &mut writer).await? else { return Ok(()) };
-    let welcome_message = {
-        let mut active_users = active_users.lock().unwrap();
-        let names = active_users
-            .iter()
-            .cloned()
-            .collect::<Vec<String>>()
-            .join(", ");
-        if !active_users.insert(name.clone()) {
-            return Ok(());
-        }
-        let mut welcome_message = format!("* The room contains: {names}").into_bytes();
-        welcome_message.push(EOM);
-        welcome_message
-    };
-    let message = Message {
-        name: name.clone(),
-        value: format!("* {} has entered the room", name.clone()),
-        is_chat: false,
-    };
-    let rx = tx.subscribe();
-    tx.send(message).unwrap();
+    let Some(welcome_message) = build_welcome_message(&active_users, &name) else { return Ok(()) };
+    let new_user_message = build_new_user_message(&name);
+    let receiver = sender.subscribe();
+    sender.send(new_user_message).unwrap();
     writer.write_all(&welcome_message).await?;
-    let r_name = name.clone();
-    spawn(async move {
-        let _ = read_message(&mut reader, tx, r_name, active_users).await;
+    spawn({
+        let name = name.clone();
+        async move {
+            let _ = read_message(&mut reader, sender, &name, active_users).await;
+        }
     });
-    spawn(async move {
-        let _ = write_message(&mut writer, rx, name).await;
+    spawn({
+        let name = name.clone();
+        async move {
+            let _ = write_message(&mut writer, receiver, &name).await;
+        }
     });
     Ok(())
 }
@@ -90,10 +78,36 @@ async fn ask_name(
     Ok(name)
 }
 
+fn build_welcome_message(
+    active_users: &Arc<Mutex<HashSet<String>>>,
+    name: &str,
+) -> Option<Vec<u8>> {
+    let mut active_users = active_users.lock().unwrap();
+    let names = active_users
+        .iter()
+        .cloned()
+        .collect::<Vec<String>>()
+        .join(", ");
+    if !active_users.insert(name.to_owned()) {
+        return None;
+    }
+    let mut welcome_message = format!("* The room contains: {names}").into_bytes();
+    welcome_message.push(EOM);
+    Some(welcome_message)
+}
+
+fn build_new_user_message(name: &str) -> Message {
+    Message {
+        name: name.to_owned(),
+        value: format!("* {name} has entered the room"),
+        is_chat: false,
+    }
+}
+
 async fn read_message(
     reader: &mut BufReader<OwnedReadHalf>,
     tx: Sender<Message>,
-    name: String,
+    name: &str,
     active_users: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     loop {
@@ -101,19 +115,19 @@ async fn read_message(
         let n = reader.read_until(EOM, &mut input).await?;
         if n == 0 {
             let message = Message {
-                name: name.clone(),
-                value: format!("* {} has left the room", name.clone()),
+                name: name.to_owned(),
+                value: format!("* {name} has left the room"),
                 is_chat: false,
             };
             let mut active_users = active_users.lock().unwrap();
-            active_users.remove(&name);
+            active_users.remove(name);
             tx.send(message).unwrap();
             return Ok(());
         }
         input.pop();
         if let Some(value) = deserialize_message(input) {
             let message = Message {
-                name: name.clone(),
+                name: name.to_owned(),
                 value,
                 is_chat: true,
             };
@@ -125,7 +139,7 @@ async fn read_message(
 async fn write_message(
     writer: &mut OwnedWriteHalf,
     mut rx: Receiver<Message>,
-    name: String,
+    name: &str,
 ) -> io::Result<()> {
     loop {
         let message = rx.recv().await.unwrap();
