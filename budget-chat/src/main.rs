@@ -16,13 +16,13 @@ use tokio::task::spawn;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let sv_address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
-    let tcp_listener = TcpListener::bind(sv_address).await?;
+    let address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
+    let listener = TcpListener::bind(address).await?;
     let (msg_sender, _) = channel::<Message>(50);
     let logged_names = Arc::new(Mutex::new(HashSet::new()));
     loop {
-        let (tcp_stream, _) = tcp_listener.accept().await?;
-        let (r_stream, w_stream) = tcp_stream.into_split();
+        let (stream, _) = listener.accept().await?;
+        let (r_stream, w_stream) = stream.into_split();
         let r_stream = RStream::new(r_stream);
         let w_stream = WStream::new(w_stream);
         let msg_sender = msg_sender.clone();
@@ -40,9 +40,9 @@ async fn process_connection(
     logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let Some(name) = ask_name(&mut r_stream, &mut w_stream).await? else { return Ok(()) };
-    let Some(room_msg) = log_in(&logged_names, &name) else { return Ok(()) };
-    w_stream.write(&room_msg).await?;
-    let new_user_msg = new_user_msg(&name);
+    let Some(log_in_msg) = log_in(&logged_names, &name) else { return Ok(()) };
+    w_stream.write(&log_in_msg).await?;
+    let new_user_msg = build_new_user_msg(&name);
     let msg_receiver = msg_sender.subscribe();
     msg_sender.send(new_user_msg).unwrap();
     {
@@ -61,12 +61,12 @@ async fn process_connection(
 }
 
 async fn ask_name(r_stream: &mut RStream, w_stream: &mut WStream) -> io::Result<Option<String>> {
-    w_stream.write(&welcome_msg()).await?;
+    w_stream.write(&build_welcome_msg()).await?;
     let name = r_stream.read().await?.and_then(parse_name);
     Ok(name)
 }
 
-fn welcome_msg() -> String {
+fn build_welcome_msg() -> String {
     "Welcome to budgetchat! What shall I call you?".to_owned()
 }
 
@@ -87,14 +87,14 @@ fn parse_name(bytes: Vec<u8>) -> Option<String> {
 
 fn log_in(logged_names: &Arc<Mutex<HashSet<String>>>, name: &str) -> Option<String> {
     let mut logged_names = logged_names.lock().unwrap();
-    let room_msg = room_msg(&logged_names);
+    let log_in_msg = build_log_in_msg(&logged_names);
     if !logged_names.insert(name.to_owned()) {
         return None;
     }
-    Some(room_msg)
+    Some(log_in_msg)
 }
 
-fn room_msg(logged_names: &HashSet<String>) -> String {
+fn build_log_in_msg(logged_names: &HashSet<String>) -> String {
     let logged_names = logged_names
         .iter()
         .cloned()
@@ -103,7 +103,7 @@ fn room_msg(logged_names: &HashSet<String>) -> String {
     format!("* The room contains: {logged_names}")
 }
 
-fn new_user_msg(name: &str) -> Message {
+fn build_new_user_msg(name: &str) -> Message {
     Message {
         name: name.to_owned(),
         value: format!("* {name} has entered the room"),
@@ -118,30 +118,30 @@ async fn read_msgs(
 ) -> io::Result<()> {
     loop {
         let Some(bytes) = r_stream.read().await? else {
-            log_out(&name, &logged_names, &msg_sender);
+            let log_out_msg = log_out(&name, &logged_names);
+            msg_sender.send(log_out_msg).unwrap();
             return Ok(());
         };
-        if let Some(msg) = chat_msg(bytes, &name) {
-            msg_sender.send(msg).unwrap();
+        if let Some(chat_msg) = parse_chat_msg(bytes, &name) {
+            msg_sender.send(chat_msg).unwrap();
         }
     }
 }
 
-fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>, msg_sender: &Sender<Message>) {
-    let msg = log_out_msg(name);
+fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>) -> Message {
     let mut logged_names = logged_names.lock().unwrap();
     logged_names.remove(name);
-    msg_sender.send(msg).unwrap();
+    build_log_out_msg(name)
 }
 
-fn log_out_msg(name: &str) -> Message {
+fn build_log_out_msg(name: &str) -> Message {
     Message {
         name: name.to_owned(),
         value: format!("* {name} has left the room"),
     }
 }
 
-fn chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
+fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
     let value = String::from_utf8(bytes).ok()?;
     let value = value.replace('\r', "");
     if value.is_empty() {
