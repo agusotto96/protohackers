@@ -40,8 +40,8 @@ async fn process_connection(
     logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     let Some(name) = ask_name(&mut r_stream, &mut w_stream).await? else { return Ok(()) };
-    let Some(welcome_msg) = welcome_msg(&logged_names, &name) else { return Ok(()) };
-    w_stream.write(&welcome_msg).await?;
+    let Some(room_msg) = room_msg(&logged_names, &name) else { return Ok(()) };
+    w_stream.write(&room_msg).await?;
     let new_user_msg = new_user_msg(&name);
     let msg_receiver = msg_sender.subscribe();
     msg_sender.send(new_user_msg).unwrap();
@@ -61,12 +61,14 @@ async fn process_connection(
 }
 
 async fn ask_name(r_stream: &mut RStream, w_stream: &mut WStream) -> io::Result<Option<String>> {
-    w_stream
-        .write("Welcome to budgetchat! What shall I call you?")
-        .await?;
+    w_stream.write(&welcome_msg()).await?;
     let Some(input) = r_stream.read().await? else { return Ok(None); };
     let name = deserialize_name(input);
     Ok(name)
+}
+
+fn welcome_msg() -> String {
+    "Welcome to budgetchat! What shall I call you?".to_owned()
 }
 
 fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
@@ -84,7 +86,7 @@ fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
     Some(name)
 }
 
-fn welcome_msg(logged_names: &Arc<Mutex<HashSet<String>>>, name: &str) -> Option<String> {
+fn room_msg(logged_names: &Arc<Mutex<HashSet<String>>>, name: &str) -> Option<String> {
     let mut logged_names = logged_names.lock().unwrap();
     let names = logged_names
         .iter()
@@ -122,10 +124,10 @@ async fn read_msgs(
 }
 
 fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>, msg_sender: &Sender<Message>) {
-    let message = log_out_msg(name);
-    let mut active_users = logged_names.lock().unwrap();
-    active_users.remove(name);
-    msg_sender.send(message).unwrap();
+    let msg = log_out_msg(name);
+    let mut logged_names = logged_names.lock().unwrap();
+    logged_names.remove(name);
+    msg_sender.send(msg).unwrap();
 }
 
 fn log_out_msg(name: &str) -> Message {
