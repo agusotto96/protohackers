@@ -14,71 +14,62 @@ use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::Sender;
 use tokio::task::spawn;
 
-const EOM: u8 = b'\n';
-
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
-    let listener = TcpListener::bind(address).await?;
-    let (sender, _) = channel::<Message>(50);
-    let active_users = Arc::new(Mutex::new(HashSet::new()));
+    let sv_address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
+    let tcp_listener = TcpListener::bind(sv_address).await?;
+    let (msg_sender, _) = channel::<Message>(50);
+    let logged_names = Arc::new(Mutex::new(HashSet::new()));
     loop {
-        let (socket, _) = listener.accept().await?;
-        let (reader, writer) = socket.into_split();
-        let reader = BufReader::new(reader);
-        let sender = sender.clone();
-        let active_users = active_users.clone();
+        let (tcp_stream, _) = tcp_listener.accept().await?;
+        let (r_stream, w_stream) = tcp_stream.into_split();
+        let r_stream = RStream::new(r_stream);
+        let w_stream = WStream::new(w_stream);
+        let msg_sender = msg_sender.clone();
+        let logged_names = logged_names.clone();
         spawn(async move {
-            let _ = process_socket(reader, writer, sender, active_users).await;
+            let _ = process_connection(r_stream, w_stream, msg_sender, logged_names).await;
         });
     }
 }
 
-async fn process_socket(
-    mut reader: BufReader<OwnedReadHalf>,
-    mut writer: OwnedWriteHalf,
-    sender: Sender<Message>,
-    active_users: Arc<Mutex<HashSet<String>>>,
+async fn process_connection(
+    mut r_stream: RStream,
+    mut w_stream: WStream,
+    msg_sender: Sender<Message>,
+    logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
-    let Some(name) = ask_name(&mut reader, &mut writer).await? else { return Ok(()) };
-    let Some(welcome_message) = build_welcome_message(&active_users, &name) else { return Ok(()) };
-    writer.write_all(&welcome_message).await?;
-    let new_user_message = build_new_user_message(&name);
-    let receiver = sender.subscribe();
-    sender.send(new_user_message).unwrap();
-    spawn({
+    let Some(name) = ask_name(&mut r_stream, &mut w_stream).await? else { return Ok(()) };
+    let Some(welcome_msg) = welcome_msg(&logged_names, &name) else { return Ok(()) };
+    w_stream.write(&welcome_msg).await?;
+    let new_user_msg = new_user_msg(&name);
+    let msg_receiver = msg_sender.subscribe();
+    msg_sender.send(new_user_msg).unwrap();
+    {
         let name = name.clone();
-        async move {
-            let _ = read_message(reader, sender, name, active_users).await;
-        }
-    });
-    spawn({
+        spawn(async move {
+            let _ = read_msgs(r_stream, msg_sender, name, logged_names).await;
+        });
+    }
+    {
         let name = name.clone();
-        async move {
-            let _ = write_message(writer, receiver, name).await;
-        }
-    });
+        spawn(async move {
+            let _ = write_msgs(w_stream, msg_receiver, name).await;
+        });
+    }
     Ok(())
 }
 
-async fn ask_name(
-    reader: &mut BufReader<OwnedReadHalf>,
-    writer: &mut OwnedWriteHalf,
-) -> io::Result<Option<String>> {
-    writer
-        .write_all(b"Welcome to budgetchat! What shall I call you?\n")
+async fn ask_name(r_stream: &mut RStream, w_stream: &mut WStream) -> io::Result<Option<String>> {
+    w_stream
+        .write("Welcome to budgetchat! What shall I call you?")
         .await?;
-    let mut input = Vec::new();
-    let n = reader.read_until(EOM, &mut input).await?;
-    if n == 0 {
-        return Ok(None);
-    }
+    let Some(input) = r_stream.read().await? else { return Ok(None); };
     let name = deserialize_name(input);
     Ok(name)
 }
 
-fn deserialize_name(mut bytes: Vec<u8>) -> Option<String> {
-    bytes.pop();
+fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
     let name = String::from_utf8(bytes).ok()?;
     let name = name.replace('\r', "");
     if name.is_empty() {
@@ -93,92 +84,82 @@ fn deserialize_name(mut bytes: Vec<u8>) -> Option<String> {
     Some(name)
 }
 
-fn build_welcome_message(
-    active_users: &Arc<Mutex<HashSet<String>>>,
-    name: &str,
-) -> Option<Vec<u8>> {
-    let mut active_users = active_users.lock().unwrap();
-    let names = active_users
+fn welcome_msg(logged_names: &Arc<Mutex<HashSet<String>>>, name: &str) -> Option<String> {
+    let mut logged_names = logged_names.lock().unwrap();
+    let names = logged_names
         .iter()
         .cloned()
         .collect::<Vec<String>>()
         .join(", ");
-    if !active_users.insert(name.to_owned()) {
+    if !logged_names.insert(name.to_owned()) {
         return None;
     }
-    let mut welcome_message = format!("* The room contains: {names}").into_bytes();
-    welcome_message.push(EOM);
-    Some(welcome_message)
+    Some(format!("* The room contains: {names}"))
 }
 
-fn build_new_user_message(name: &str) -> Message {
+fn new_user_msg(name: &str) -> Message {
     Message {
         name: name.to_owned(),
         value: format!("* {name} has entered the room"),
     }
 }
 
-async fn read_message(
-    mut reader: BufReader<OwnedReadHalf>,
-    sender: Sender<Message>,
+async fn read_msgs(
+    mut r_stream: RStream,
+    msg_sender: Sender<Message>,
     name: String,
-    active_users: Arc<Mutex<HashSet<String>>>,
+    logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     loop {
-        let mut input = Vec::new();
-        let n = reader.read_until(EOM, &mut input).await?;
-        if n == 0 {
-            log_out(&name, &active_users, &sender);
+        let Some(bytes) = r_stream.read().await? else {
+            log_out(&name, &logged_names, &msg_sender);
             return Ok(());
-        }
-        if let Some(value) = deserialize_message(input) {
-            let message = Message {
-                name: name.clone(),
-                value: format!("[{name}] {value}"),
-            };
-            sender.send(message).unwrap();
+        };
+        if let Some(msg) = chat_msg(bytes, &name) {
+            msg_sender.send(msg).unwrap();
         }
     }
 }
 
-fn log_out(name: &str, active_users: &Arc<Mutex<HashSet<String>>>, sender: &Sender<Message>) {
-    let message = build_log_out_message(name);
-    let mut active_users = active_users.lock().unwrap();
+fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>, msg_sender: &Sender<Message>) {
+    let message = log_out_msg(name);
+    let mut active_users = logged_names.lock().unwrap();
     active_users.remove(name);
-    sender.send(message).unwrap();
+    msg_sender.send(message).unwrap();
 }
 
-fn build_log_out_message(name: &str) -> Message {
+fn log_out_msg(name: &str) -> Message {
     Message {
         name: name.to_owned(),
         value: format!("* {name} has left the room"),
     }
 }
 
-fn deserialize_message(mut bytes: Vec<u8>) -> Option<String> {
-    bytes.pop();
-    let message = String::from_utf8(bytes).ok()?;
-    let message = message.replace('\r', "");
-    if message.is_empty() {
+fn chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
+    let value = String::from_utf8(bytes).ok()?;
+    let value = value.replace('\r', "");
+    if value.is_empty() {
         return None;
     }
-    if !message.is_ascii() {
+    if !value.is_ascii() {
         return None;
     }
-    Some(message)
+    let msg = Message {
+        name: name.to_owned(),
+        value: format!("[{name}] {value}"),
+    };
+    Some(msg)
 }
 
-async fn write_message(
-    mut writer: OwnedWriteHalf,
-    mut receiver: Receiver<Message>,
+async fn write_msgs(
+    mut w_stream: WStream,
+    mut msg_receiver: Receiver<Message>,
     name: String,
 ) -> io::Result<()> {
     loop {
-        let message = receiver.recv().await.unwrap();
-        if message.name != name {
-            let mut bytes = message.value.into_bytes();
-            bytes.push(EOM);
-            writer.write_all(&bytes).await?;
+        let msg = msg_receiver.recv().await.unwrap();
+        if msg.name != name {
+            w_stream.write(&msg.value).await?;
         }
     }
 }
@@ -188,3 +169,41 @@ struct Message {
     name: String,
     value: String,
 }
+
+struct RStream {
+    r_stream: BufReader<OwnedReadHalf>,
+}
+
+impl RStream {
+    fn new(r_stream: OwnedReadHalf) -> Self {
+        Self {
+            r_stream: BufReader::new(r_stream),
+        }
+    }
+    async fn read(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let mut bytes = Vec::new();
+        let n = self.r_stream.read_until(EOM, &mut bytes).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        bytes.pop();
+        Ok(Some(bytes))
+    }
+}
+
+struct WStream {
+    w_stream: OwnedWriteHalf,
+}
+
+impl WStream {
+    fn new(w_stream: OwnedWriteHalf) -> Self {
+        Self { w_stream }
+    }
+    async fn write(&mut self, value: &str) -> io::Result<()> {
+        let mut bytes = value.as_bytes().to_vec();
+        bytes.push(EOM);
+        self.w_stream.write_all(&bytes).await
+    }
+}
+
+const EOM: u8 = b'\n';
