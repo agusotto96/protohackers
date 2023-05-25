@@ -42,20 +42,20 @@ async fn process_socket(
 ) -> io::Result<()> {
     let Some(name) = ask_name(&mut reader, &mut writer).await? else { return Ok(()) };
     let Some(welcome_message) = build_welcome_message(&active_users, &name) else { return Ok(()) };
+    writer.write_all(&welcome_message).await?;
     let new_user_message = build_new_user_message(&name);
     let receiver = sender.subscribe();
     sender.send(new_user_message).unwrap();
-    writer.write_all(&welcome_message).await?;
     spawn({
         let name = name.clone();
         async move {
-            let _ = read_message(&mut reader, sender, &name, active_users).await;
+            let _ = read_message(reader, sender, name, active_users).await;
         }
     });
     spawn({
         let name = name.clone();
         async move {
-            let _ = write_message(&mut writer, receiver, &name).await;
+            let _ = write_message(writer, receiver, name).await;
         }
     });
     Ok(())
@@ -73,9 +73,24 @@ async fn ask_name(
     if n == 0 {
         return Ok(None);
     }
-    input.pop();
     let name = deserialize_name(input);
     Ok(name)
+}
+
+fn deserialize_name(mut bytes: Vec<u8>) -> Option<String> {
+    bytes.pop();
+    let name = String::from_utf8(bytes).ok()?;
+    let name = name.replace('\r', "");
+    if name.is_empty() {
+        return None;
+    }
+    if !name.is_ascii() {
+        return None;
+    }
+    if !name.chars().all(char::is_alphanumeric) {
+        return None;
+    }
+    Some(name)
 }
 
 fn build_welcome_message(
@@ -100,77 +115,48 @@ fn build_new_user_message(name: &str) -> Message {
     Message {
         name: name.to_owned(),
         value: format!("* {name} has entered the room"),
-        is_chat: false,
     }
 }
 
 async fn read_message(
-    reader: &mut BufReader<OwnedReadHalf>,
-    tx: Sender<Message>,
-    name: &str,
+    mut reader: BufReader<OwnedReadHalf>,
+    sender: Sender<Message>,
+    name: String,
     active_users: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     loop {
         let mut input = Vec::new();
         let n = reader.read_until(EOM, &mut input).await?;
         if n == 0 {
-            let message = Message {
-                name: name.to_owned(),
-                value: format!("* {name} has left the room"),
-                is_chat: false,
-            };
-            let mut active_users = active_users.lock().unwrap();
-            active_users.remove(name);
-            tx.send(message).unwrap();
+            log_out(&name, &active_users, &sender);
             return Ok(());
         }
-        input.pop();
         if let Some(value) = deserialize_message(input) {
             let message = Message {
-                name: name.to_owned(),
-                value,
-                is_chat: true,
+                name: name.clone(),
+                value: format!("[{name}] {value}"),
             };
-            tx.send(message).unwrap();
+            sender.send(message).unwrap();
         }
     }
 }
 
-async fn write_message(
-    writer: &mut OwnedWriteHalf,
-    mut rx: Receiver<Message>,
-    name: &str,
-) -> io::Result<()> {
-    loop {
-        let message = rx.recv().await.unwrap();
-        if message.name != name {
-            let mut bytes = if message.is_chat {
-                format!("[{}] {}", message.name, message.value).into_bytes()
-            } else {
-                message.value.into_bytes()
-            };
-            bytes.push(EOM);
-            writer.write_all(&bytes).await?;
-        }
+fn log_out(name: &str, active_users: &Arc<Mutex<HashSet<String>>>, sender: &Sender<Message>) {
+    let message = build_log_out_message(name);
+    let mut active_users = active_users.lock().unwrap();
+    active_users.remove(name);
+    sender.send(message).unwrap();
+}
+
+fn build_log_out_message(name: &str) -> Message {
+    Message {
+        name: name.to_owned(),
+        value: format!("* {name} has left the room"),
     }
 }
 
-fn deserialize_name(bytes: Vec<u8>) -> Option<String> {
-    let name = String::from_utf8(bytes).ok()?;
-    let name = name.replace('\r', "");
-    if name.is_empty() {
-        return None;
-    }
-    if !name.is_ascii() {
-        return None;
-    }
-    if !name.chars().all(char::is_alphanumeric) {
-        return None;
-    }
-    Some(name)
-}
-
-fn deserialize_message(bytes: Vec<u8>) -> Option<String> {
+fn deserialize_message(mut bytes: Vec<u8>) -> Option<String> {
+    bytes.pop();
     let message = String::from_utf8(bytes).ok()?;
     let message = message.replace('\r', "");
     if message.is_empty() {
@@ -182,9 +168,23 @@ fn deserialize_message(bytes: Vec<u8>) -> Option<String> {
     Some(message)
 }
 
+async fn write_message(
+    mut writer: OwnedWriteHalf,
+    mut receiver: Receiver<Message>,
+    name: String,
+) -> io::Result<()> {
+    loop {
+        let message = receiver.recv().await.unwrap();
+        if message.name != name {
+            let mut bytes = message.value.into_bytes();
+            bytes.push(EOM);
+            writer.write_all(&bytes).await?;
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Message {
     name: String,
     value: String,
-    is_chat: bool,
 }
