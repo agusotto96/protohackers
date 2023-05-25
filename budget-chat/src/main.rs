@@ -23,14 +23,13 @@ async fn main() -> io::Result<()> {
     let (tx, _) = channel::<Message>(50);
     let active_users = Arc::new(Mutex::new(HashSet::new()));
     loop {
-        let (socket, client) = listener.accept().await?;
+        let (socket, _) = listener.accept().await?;
         let (reader, writer) = socket.into_split();
-        let client = client.to_string();
         let reader = BufReader::new(reader);
         let tx = tx.clone();
         let active_users = active_users.clone();
         spawn(async move {
-            let _ = process_socket(reader, writer, client, tx, active_users).await;
+            let _ = process_socket(reader, writer, tx, active_users).await;
         });
     }
 }
@@ -38,7 +37,6 @@ async fn main() -> io::Result<()> {
 async fn process_socket(
     mut reader: BufReader<OwnedReadHalf>,
     mut writer: OwnedWriteHalf,
-    client: String,
     tx: Sender<Message>,
     active_users: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
@@ -59,7 +57,6 @@ async fn process_socket(
     };
     let message = Message {
         name: name.clone(),
-        client: client.clone(),
         value: format!("* {} has entered the room", name.clone()),
         is_chat: false,
     };
@@ -67,12 +64,11 @@ async fn process_socket(
     tx.send(message).unwrap();
     writer.write_all(&welcome_message).await?;
     let r_name = name.clone();
-    let r_client = client.clone();
     spawn(async move {
-        let _ = read_message(&mut reader, tx, r_name, r_client, active_users).await;
+        let _ = read_message(&mut reader, tx, r_name, active_users).await;
     });
     spawn(async move {
-        let _ = write_message(&mut writer, rx, client).await;
+        let _ = write_message(&mut writer, rx, name).await;
     });
     Ok(())
 }
@@ -98,7 +94,6 @@ async fn read_message(
     reader: &mut BufReader<OwnedReadHalf>,
     tx: Sender<Message>,
     name: String,
-    client: String,
     active_users: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     loop {
@@ -107,7 +102,6 @@ async fn read_message(
         if n == 0 {
             let message = Message {
                 name: name.clone(),
-                client: client.clone(),
                 value: format!("* {} has left the room", name.clone()),
                 is_chat: false,
             };
@@ -120,7 +114,6 @@ async fn read_message(
         if let Some(value) = deserialize_message(input) {
             let message = Message {
                 name: name.clone(),
-                client: client.clone(),
                 value,
                 is_chat: true,
             };
@@ -132,11 +125,11 @@ async fn read_message(
 async fn write_message(
     writer: &mut OwnedWriteHalf,
     mut rx: Receiver<Message>,
-    client: String,
+    name: String,
 ) -> io::Result<()> {
     loop {
         let message = rx.recv().await.unwrap();
-        if message.client != client {
+        if message.name != name {
             let mut bytes = if message.is_chat {
                 format!("[{}] {}", message.name, message.value).into_bytes()
             } else {
@@ -178,7 +171,6 @@ fn deserialize_message(bytes: Vec<u8>) -> Option<String> {
 #[derive(Clone, Debug)]
 struct Message {
     name: String,
-    client: String,
     value: String,
     is_chat: bool,
 }
