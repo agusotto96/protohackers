@@ -155,21 +155,6 @@ fn build_log_out_msg(name: &str) -> Message {
     }
 }
 
-fn parse_name(bytes: Vec<u8>) -> Option<String> {
-    let name = String::from_utf8(bytes).ok()?;
-    let name = name.replace('\r', "");
-    if name.is_empty() {
-        return None;
-    }
-    if !name.is_ascii() {
-        return None;
-    }
-    if !name.chars().all(char::is_alphanumeric) {
-        return None;
-    }
-    Some(name)
-}
-
 fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
     let value = String::from_utf8(bytes).ok()?;
     let value = value.replace('\r', "");
@@ -184,6 +169,21 @@ fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
         value: format!("[{name}] {value}"),
     };
     Some(msg)
+}
+
+fn parse_name(bytes: Vec<u8>) -> Option<String> {
+    let name = String::from_utf8(bytes).ok()?;
+    let name = name.replace('\r', "");
+    if name.is_empty() {
+        return None;
+    }
+    if !name.is_ascii() {
+        return None;
+    }
+    if !name.chars().all(char::is_alphanumeric) {
+        return None;
+    }
+    Some(name)
 }
 
 async fn read_bytes(r_stream: &mut BufReader<OwnedReadHalf>) -> io::Result<Option<Vec<u8>>> {
