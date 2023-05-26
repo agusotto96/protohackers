@@ -59,38 +59,6 @@ async fn process_connection(
     Ok(())
 }
 
-async fn ask_name(
-    r_stream: &mut BufReader<OwnedReadHalf>,
-    w_stream: &mut OwnedWriteHalf,
-) -> io::Result<Option<String>> {
-    let welcome_msg = build_welcome_msg();
-    write_bytes(w_stream, welcome_msg.as_bytes()).await?;
-    let name = read_bytes(r_stream).await?.and_then(parse_name);
-    Ok(name)
-}
-
-async fn log_in(
-    logged_names: &Arc<Mutex<HashSet<String>>>,
-    name: &str,
-    w_stream: &mut OwnedWriteHalf,
-) -> io::Result<bool> {
-    let log_in_msg = {
-        let mut logged_names = logged_names.lock().unwrap();
-        let log_in_msg = build_log_in_msg(&logged_names);
-        if !logged_names.insert(name.to_owned()) {
-            return Ok(false);
-        }
-        log_in_msg
-    };
-    write_bytes(w_stream, log_in_msg.as_bytes()).await?;
-    Ok(true)
-}
-
-fn notify_log_in(name: &str, msg_sender: &Sender<Message>) {
-    let new_user_msg = build_new_user_msg(name);
-    msg_sender.send(new_user_msg).unwrap();
-}
-
 async fn read_msgs(
     r_stream: &mut BufReader<OwnedReadHalf>,
     msg_sender: Sender<Message>,
@@ -99,7 +67,8 @@ async fn read_msgs(
 ) -> io::Result<()> {
     loop {
         let Some(bytes) = read_bytes(r_stream).await? else {
-            log_out(&name, &logged_names, &msg_sender);
+            log_out(&name, &logged_names);
+            notify_log_out(&name, &msg_sender);
             return Ok(());
         };
         if let Some(chat_msg) = parse_chat_msg(bytes, &name) {
@@ -121,9 +90,49 @@ async fn write_msgs(
     }
 }
 
-fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>, msg_sender: &Sender<Message>) {
+/// Shows the user a welcome message asking for their name, and then attempts to parse their response.
+async fn ask_name(
+    r_stream: &mut BufReader<OwnedReadHalf>,
+    w_stream: &mut OwnedWriteHalf,
+) -> io::Result<Option<String>> {
+    let welcome_msg = build_welcome_msg();
+    write_bytes(w_stream, welcome_msg.as_bytes()).await?;
+    let name = read_bytes(r_stream).await?.and_then(parse_name);
+    Ok(name)
+}
+
+/// Attempts to add a name to the set of logged names. If added successfully, displays to the user the names already logged.
+async fn log_in(
+    logged_names: &Arc<Mutex<HashSet<String>>>,
+    name: &str,
+    w_stream: &mut OwnedWriteHalf,
+) -> io::Result<bool> {
+    let log_in_msg = {
+        let mut logged_names = logged_names.lock().unwrap();
+        let log_in_msg = build_log_in_msg(&logged_names);
+        if !logged_names.insert(name.to_owned()) {
+            return Ok(false);
+        }
+        log_in_msg
+    };
+    write_bytes(w_stream, log_in_msg.as_bytes()).await?;
+    Ok(true)
+}
+
+/// Notifies users of a newly registered user.
+fn notify_log_in(name: &str, msg_sender: &Sender<Message>) {
+    let new_user_msg = build_new_user_msg(name);
+    msg_sender.send(new_user_msg).unwrap();
+}
+
+/// Removes a name from the set of logged names.
+fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>) {
     let mut logged_names = logged_names.lock().unwrap();
     logged_names.remove(name);
+}
+
+/// Notifies users of a newly logged out user.
+fn notify_log_out(name: &str, msg_sender: &Sender<Message>) {
     let log_out_msg = build_log_out_msg(name);
     msg_sender.send(log_out_msg).unwrap();
 }
@@ -157,7 +166,6 @@ fn build_log_out_msg(name: &str) -> Message {
 
 fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
     let value = String::from_utf8(bytes).ok()?;
-    let value = value.replace('\r', "");
     if value.is_empty() {
         return None;
     }
@@ -173,7 +181,6 @@ fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
 
 fn parse_name(bytes: Vec<u8>) -> Option<String> {
     let name = String::from_utf8(bytes).ok()?;
-    let name = name.replace('\r', "");
     if name.is_empty() {
         return None;
     }
