@@ -15,15 +15,15 @@ use std::thread::spawn;
 fn main() -> io::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:8080")?;
     for stream in listener.incoming().flatten() {
-        let reader = BufReader::new(stream.try_clone()?);
         spawn(|| {
-            let _ = handle_connection(stream, reader);
+            let _ = handle_connection(stream);
         });
     }
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream, mut reader: BufReader<TcpStream>) -> io::Result<()> {
+fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
+    let mut reader = BufReader::new(stream.try_clone()?);
     loop {
         if let Some(request) = read_request(&mut reader)? {
             let response = Response {
