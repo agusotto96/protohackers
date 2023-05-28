@@ -10,4 +10,3 @@ num-bigint = "0.4.3"
 num-prime = "0.4.3"
 serde = { version = "1.0.160", features = ["derive"] }
 serde_json = { version = "1.0.96", features = ["arbitrary_precision"] }
-tokio = { version = "1.26.0", features = ["full"] }

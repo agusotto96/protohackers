@@ -18,8 +18,7 @@ fn main() -> io::Result<()> {
 fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     let mut inserts: Vec<Insert> = Vec::new();
     loop {
-        let message = read_message(&mut stream)?;
-        match message {
+        match read_message(&mut stream)? {
             Some(Message::Insert(insert)) => {
                 inserts.push(insert);
             }
@@ -27,7 +26,9 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
                 let mean_price = calculate_mean_price(&mut inserts, query);
                 write_mean_price(&mut stream, mean_price)?;
             }
-            None => (),
+            None => {
+                return Ok(());
+            }
         }
     }
 }

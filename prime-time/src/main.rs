@@ -3,65 +3,46 @@ use num_prime::nt_funcs;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Number;
-use std::env;
+use std::io;
+use std::io::BufRead;
+use std::io::BufReader;
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
 use std::str::FromStr;
-use tokio::io;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
-use tokio::net::TcpListener;
-use tokio::net::TcpStream;
+use std::thread::spawn;
 
-const EOR: u8 = b'\n';
-
-const BAD_OUTPUT: &[u8] = &[b'n', b'o', b'p', b'e', EOR];
-
-#[tokio::main]
-async fn main() -> io::Result<()> {
-    let address = env::args().nth(1).unwrap_or("0.0.0.0:8080".into());
-    let listener = TcpListener::bind(address).await?;
-    loop {
-        let (socket, _) = listener.accept().await?;
-        tokio::spawn(async move {
-            let _ = process_socket(socket).await;
+fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("0.0.0.0:8080")?;
+    for stream in listener.incoming().flatten() {
+        let reader = BufReader::new(stream.try_clone()?);
+        spawn(|| {
+            let _ = handle_connection(stream, reader);
         });
     }
+    Ok(())
 }
 
-async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
-    let (r_socket, mut w_socket) = socket.split();
-    let mut reader = BufReader::new(r_socket);
+fn handle_connection(mut stream: TcpStream, mut reader: BufReader<TcpStream>) -> io::Result<()> {
     loop {
-        let mut input = Vec::new();
-        let n = reader.read_until(EOR, &mut input).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        let output = deserialize_request(&input)
-            .map(|r| process_request(&r))
-            .map_or(BAD_OUTPUT.into(), |r| serialize_response(&r));
-        w_socket.write_all(&output).await?;
-        if output == BAD_OUTPUT {
+        if let Some(request) = read_request(&mut reader)? {
+            let response = Response {
+                method: Method::IsPrime,
+                prime: is_prime(&request.number),
+            };
+            write_is_prime_response(&mut stream, &response)?;
+        } else {
+            write_bad_request(&mut stream)?;
             return Ok(());
         }
     }
 }
 
-fn deserialize_request(bytes: &[u8]) -> Option<Request> {
-    serde_json::from_slice(bytes).ok()
-}
-
-fn process_request(request: &Request) -> Response {
-    Response {
-        method: Method::IsPrime,
-        prime: is_prime(&request.number),
-    }
-}
-
-fn serialize_response(response: &Response) -> Vec<u8> {
-    let mut bytes = serde_json::to_vec(&response).unwrap();
-    bytes.push(EOR);
-    bytes
+fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Request>> {
+    let mut buffer = Vec::new();
+    reader.read_until(EOR, &mut buffer)?;
+    let request = serde_json::from_slice(&buffer).ok();
+    Ok(request)
 }
 
 fn is_prime(number: &Number) -> bool {
@@ -75,6 +56,18 @@ fn is_prime(number: &Number) -> bool {
     }
     let integer = BigUint::from_str(integer).unwrap();
     nt_funcs::is_prime(&integer, None).probably()
+}
+
+fn write_is_prime_response(stream: &mut TcpStream, response: &Response) -> io::Result<()> {
+    let mut bytes = serde_json::to_vec(response).unwrap();
+    bytes.push(EOR);
+    stream.write_all(&bytes)
+}
+
+fn write_bad_request(stream: &mut TcpStream) -> io::Result<()> {
+    let mut bytes = b"nope".to_vec();
+    bytes.push(EOR);
+    stream.write_all(&bytes)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,3 +87,5 @@ enum Method {
     #[serde(rename = "isPrime")]
     IsPrime,
 }
+
+const EOR: u8 = b'\n';
