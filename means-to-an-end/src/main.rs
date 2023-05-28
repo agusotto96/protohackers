@@ -1,43 +1,45 @@
-use std::env;
-use tokio::io;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader;
-use tokio::net::TcpListener;
-use tokio::net::TcpStream;
+use std::io;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpListener;
+use std::net::TcpStream;
+use std::thread::spawn;
 
-#[tokio::main]
-async fn main() -> io::Result<()> {
-    let address = env::args().nth(1).unwrap_or("0.0.0.0:8080".into());
-    let listener = TcpListener::bind(address).await?;
-    loop {
-        let (socket, _) = listener.accept().await?;
-        tokio::spawn(async move {
-            let _ = process_socket(socket).await;
+fn main() -> io::Result<()> {
+    let listener = TcpListener::bind("0.0.0.0:8080")?;
+    for stream in listener.incoming().flatten() {
+        spawn(|| {
+            let _ = handle_connection(stream);
         });
     }
+    Ok(())
 }
 
-async fn process_socket(mut socket: TcpStream) -> io::Result<()> {
-    let (r_socket, mut w_socket) = socket.split();
-    let mut reader = BufReader::new(r_socket);
+fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     let mut inserts: Vec<Insert> = Vec::new();
     loop {
-        let mut input = [0; 9];
-        let n = reader.read_exact(&mut input).await?;
-        if n == 0 {
-            return Ok(());
-        }
-        let output = deserialize_message(&input)
-            .and_then(|m| process_message(&mut inserts, m))
-            .map(serialize_response);
-        if let Some(output) = output {
-            w_socket.write_all(&output).await?;
+        let message = read_message(&mut stream)?;
+        match message {
+            Some(Message::Insert(insert)) => {
+                inserts.push(insert);
+            }
+            Some(Message::Query(query)) => {
+                let mean_price = calculate_mean_price(&mut inserts, query);
+                write_mean_price(&mut stream, mean_price)?;
+            }
+            None => (),
         }
     }
 }
 
-fn deserialize_message(bytes: &[u8; 9]) -> Option<Message> {
+fn read_message(stream: &mut TcpStream) -> io::Result<Option<Message>> {
+    let mut buffer = [0; 9];
+    stream.read_exact(&mut buffer)?;
+    let message = parse_message(&buffer);
+    Ok(message)
+}
+
+fn parse_message(bytes: &[u8; 9]) -> Option<Message> {
     match bytes[0] {
         b'I' => {
             let timestamp = i32::from_be_bytes(bytes[1..5].try_into().unwrap());
@@ -55,24 +57,7 @@ fn deserialize_message(bytes: &[u8; 9]) -> Option<Message> {
     }
 }
 
-fn process_message(inserts: &mut Vec<Insert>, message: Message) -> Option<i32> {
-    match message {
-        Message::Insert(insert) => {
-            process_insert(inserts, insert);
-            None
-        }
-        Message::Query(query) => {
-            let response = process_query(inserts, query);
-            Some(response)
-        }
-    }
-}
-
-fn process_insert(inserts: &mut Vec<Insert>, insert: Insert) {
-    inserts.push(insert);
-}
-
-fn process_query(inserts: &mut Vec<Insert>, query: Query) -> i32 {
+fn calculate_mean_price(inserts: &mut Vec<Insert>, query: Query) -> i32 {
     let mut sum: i128 = 0;
     let mut count: i128 = 0;
     for insert in inserts {
@@ -89,8 +74,9 @@ fn process_query(inserts: &mut Vec<Insert>, query: Query) -> i32 {
     i32::try_from(mean).unwrap()
 }
 
-fn serialize_response(response: i32) -> [u8; 4] {
-    response.to_be_bytes()
+fn write_mean_price(stream: &mut TcpStream, mean_price: i32) -> io::Result<()> {
+    let bytes = mean_price.to_be_bytes();
+    stream.write_all(&bytes)
 }
 
 #[derive(Clone, Copy)]
