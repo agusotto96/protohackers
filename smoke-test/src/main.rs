@@ -17,11 +17,11 @@ fn main() -> io::Result<()> {
 
 fn process_stream(mut stream: TcpStream) -> io::Result<()> {
     loop {
-        let mut buffer = [0; 1028];
+        let mut buffer = [0; 1024];
         let n = stream.read(&mut buffer)?;
         if n == 0 {
             return Ok(());
         }
-        stream.write_all(&buffer[0..n])?
+        stream.write_all(&buffer[0..n])?;
     }
 }
