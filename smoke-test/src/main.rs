@@ -7,15 +7,15 @@ use std::thread::spawn;
 
 fn main() -> io::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:8080")?;
-    loop {
-        let (stream, _) = listener.accept()?;
+    for stream in listener.incoming().flatten() {
         spawn(|| {
-            let _ = process_stream(stream);
+            let _ = handle_connection(stream);
         });
     }
+    Ok(())
 }
 
-fn process_stream(mut stream: TcpStream) -> io::Result<()> {
+fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     loop {
         let mut buffer = [0; 1024];
         let n = stream.read(&mut buffer)?;
