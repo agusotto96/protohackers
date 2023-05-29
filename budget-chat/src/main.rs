@@ -1,7 +1,5 @@
 use std::collections::HashSet;
-use std::env::args;
 use std::sync::Arc;
-use std::sync::Mutex;
 use tokio::io;
 use tokio::io::AsyncBufReadExt;
 use tokio::io::AsyncWriteExt;
@@ -12,12 +10,12 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast::channel;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::broadcast::Sender;
+use tokio::sync::Mutex;
 use tokio::task::spawn;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    let address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
-    let listener = TcpListener::bind(address).await?;
+    let listener = TcpListener::bind("0.0.0.0:8080").await?;
     let (msg_sender, _) = channel::<Message>(50);
     let logged_names = Arc::new(Mutex::new(HashSet::new()));
     loop {
@@ -27,12 +25,12 @@ async fn main() -> io::Result<()> {
         let msg_sender = msg_sender.clone();
         let logged_names = logged_names.clone();
         spawn(async move {
-            let _ = process_connection(r_stream, w_stream, msg_sender, logged_names).await;
+            let _ = handle_connection(r_stream, w_stream, msg_sender, logged_names).await;
         });
     }
 }
 
-async fn process_connection(
+async fn handle_connection(
     mut r_stream: BufReader<OwnedReadHalf>,
     mut w_stream: OwnedWriteHalf,
     msg_sender: Sender<Message>,
@@ -67,7 +65,7 @@ async fn read_msgs(
 ) -> io::Result<()> {
     loop {
         let Some(bytes) = read_bytes(r_stream).await? else {
-            log_out(&name, &logged_names);
+            log_out(&name, &logged_names).await;
             notify_log_out(&name, &msg_sender);
             return Ok(());
         };
@@ -107,15 +105,13 @@ async fn log_in(
     name: &str,
     w_stream: &mut OwnedWriteHalf,
 ) -> io::Result<bool> {
-    let log_in_msg = {
-        let mut logged_names = logged_names.lock().unwrap();
-        let log_in_msg = build_log_in_msg(&logged_names);
-        if !logged_names.insert(name.to_owned()) {
-            return Ok(false);
-        }
-        log_in_msg
-    };
+    let mut logged_names = logged_names.lock().await;
+    if logged_names.contains(name) {
+        return Ok(false);
+    }
+    let log_in_msg = build_log_in_msg(&logged_names);
     write_bytes(w_stream, log_in_msg.as_bytes()).await?;
+    logged_names.insert(name.to_owned());
     Ok(true)
 }
 
@@ -126,8 +122,8 @@ fn notify_log_in(name: &str, msg_sender: &Sender<Message>) {
 }
 
 /// Removes a name from the set of logged names.
-fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>) {
-    let mut logged_names = logged_names.lock().unwrap();
+async fn log_out(name: &str, logged_names: &Arc<Mutex<HashSet<String>>>) {
+    let mut logged_names = logged_names.lock().await;
     logged_names.remove(name);
 }
 
