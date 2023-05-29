@@ -191,7 +191,7 @@ fn parse_name(bytes: Vec<u8>) -> Option<String> {
 
 async fn read_bytes(r_stream: &mut BufReader<OwnedReadHalf>) -> io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
-    let n = r_stream.read_until(b'\n', &mut bytes).await?;
+    let n = r_stream.read_until(EOM, &mut bytes).await?;
     if n == 0 {
         return Ok(None);
     }
@@ -201,7 +201,7 @@ async fn read_bytes(r_stream: &mut BufReader<OwnedReadHalf>) -> io::Result<Optio
 
 async fn write_bytes(w_stream: &mut OwnedWriteHalf, bytes: &[u8]) -> io::Result<()> {
     let mut bytes = bytes.to_vec();
-    bytes.push(b'\n');
+    bytes.push(EOM);
     w_stream.write_all(&bytes).await
 }
 
@@ -210,3 +210,5 @@ struct Message {
     name: String,
     value: String,
 }
+
+const EOM: u8 = b'\n';
