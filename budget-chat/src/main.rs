@@ -44,18 +44,14 @@ async fn handle_connection(
     notify_log_in(&name, &msg_sender);
     {
         let name = name.clone();
-        let msg_sender = msg_sender.clone();
-        let logged_names = logged_names.clone();
         spawn(async move {
             let _ = read_msgs(&mut r_stream, msg_sender, name, logged_names).await;
         });
     }
     {
         let name = name.clone();
-        let msg_sender = msg_sender.clone();
-        let logged_names = logged_names.clone();
         spawn(async move {
-            let _ = write_msgs(w_stream, msg_receiver, msg_sender, name, logged_names).await;
+            let _ = write_msgs(w_stream, msg_receiver, name).await;
         });
     }
     Ok(())
@@ -68,7 +64,7 @@ async fn read_msgs(
     logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     loop {
-        let Ok(Some(bytes)) = read_bytes(r_stream).await else {
+        let Some(bytes) = read_bytes(r_stream).await? else {
             log_out(&name, &logged_names).await;
             notify_log_out(&name, &msg_sender);
             return Ok(());
@@ -82,20 +78,12 @@ async fn read_msgs(
 async fn write_msgs(
     mut w_stream: OwnedWriteHalf,
     mut msg_receiver: Receiver<Message>,
-    msg_sender: Sender<Message>,
     name: String,
-    logged_names: Arc<Mutex<HashSet<String>>>,
 ) -> io::Result<()> {
     loop {
         let msg = msg_receiver.recv().await.unwrap();
-        if msg.name == name {
-            continue;
-        }
-        let bytes = msg.value.as_bytes();
-        if write_bytes(&mut w_stream, bytes).await.is_err() {
-            log_out(&name, &logged_names).await;
-            notify_log_out(&name, &msg_sender);
-            return Ok(());
+        if msg.name != name {
+            write_bytes(&mut w_stream, msg.value.as_bytes()).await?;
         }
     }
 }
