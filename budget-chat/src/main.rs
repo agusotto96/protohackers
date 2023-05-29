@@ -19,7 +19,7 @@ async fn main() -> io::Result<()> {
     let (msg_sender, _) = channel::<Message>(50);
     let logged_names = Arc::new(Mutex::new(HashSet::new()));
     loop {
-        let (stream, _) = listener.accept().await?;
+        let Ok((stream, _)) = listener.accept().await else { continue };
         let (r_stream, w_stream) = stream.into_split();
         let r_stream = BufReader::new(r_stream);
         let msg_sender = msg_sender.clone();
