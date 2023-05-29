@@ -69,6 +69,7 @@ async fn read_msgs(
 ) -> io::Result<()> {
     loop {
         let Ok(Some(bytes)) = read_bytes(r_stream).await else {
+            eprintln!("wtf i am doing here1");
             log_out(&name, &logged_names).await;
             notify_log_out(&name, &msg_sender);
             return Ok(());
@@ -93,6 +94,7 @@ async fn write_msgs(
         }
         let bytes = msg.value.as_bytes();
         if write_bytes(&mut w_stream, bytes).await.is_err() {
+            eprintln!("wtf i am doing here2");
             log_out(&name, &logged_names).await;
             notify_log_out(&name, &msg_sender);
             return Ok(());
