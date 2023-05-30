@@ -26,7 +26,10 @@ fn main() -> io::Result<()> {
 
 fn handle_connection(mut reader: BufReader<TcpStream>, mut stream: TcpStream) -> io::Result<()> {
     loop {
-        let Some(request) = read_request(&mut reader)? else { return Ok(()) };
+        let Some(request) = read_request(&mut reader)? else {
+            stream.shutdown(std::net::Shutdown::Both)?;
+            return Ok(());
+        };
         let request = tamper(&request);
         stream.write_all(&request)?;
     }
