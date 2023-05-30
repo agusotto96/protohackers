@@ -37,7 +37,9 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<Vec<u8>> {
 }
 
 fn tamper(request: &[u8]) -> Vec<u8> {
-    request
+    let mut request = request.to_vec();
+    request.pop();
+    let mut request = request
         .split(|b| *b == b' ')
         .map(|w| {
             if is_boguscoin_address(w) {
@@ -47,7 +49,9 @@ fn tamper(request: &[u8]) -> Vec<u8> {
             }
         })
         .collect::<Vec<Vec<u8>>>()
-        .join(&b' ')
+        .join(&b' ');
+    request.push(b'\n');
+    request
 }
 
 fn is_boguscoin_address(bytes: &[u8]) -> bool {
