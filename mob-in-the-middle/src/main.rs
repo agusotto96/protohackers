@@ -9,14 +9,16 @@ use std::thread::spawn;
 fn main() -> io::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:8080")?;
     for stream in listener.incoming().flatten() {
-        let Ok(reader) = stream.try_clone().map(BufReader::new) else { continue };
-        let Ok(chat_stream) = TcpStream::connect("chat.protohackers.com:16963") else { continue };
-        let Ok(chat_reader) = chat_stream.try_clone().map(BufReader::new) else { continue };
         spawn(|| {
-            let _ = handle_connection(reader, chat_stream);
-        });
-        spawn(|| {
-            let _ = handle_connection(chat_reader, stream);
+            let Ok(reader) = stream.try_clone().map(BufReader::new) else { return };
+            let Ok(chat_stream) = TcpStream::connect("chat.protohackers.com:16963") else { return };
+            let Ok(chat_reader) = chat_stream.try_clone().map(BufReader::new) else { return };
+            spawn(|| {
+                let _ = handle_connection(reader, chat_stream);
+            });
+            spawn(|| {
+                let _ = handle_connection(chat_reader, stream);
+            });
         });
     }
     Ok(())
