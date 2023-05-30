@@ -4,25 +4,22 @@ use std::net::{SocketAddr, UdpSocket};
 
 fn main() -> io::Result<()> {
     let mut store: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
-    let version_key = b"version";
-    let version_value = b"Otto 1.0";
-    store.insert(version_key.to_vec(), version_value.to_vec());
     let mut socket = UdpSocket::bind("0.0.0.0:8080")?;
     loop {
         let Ok((bytes, address)) = read_bytes(&mut socket) else { continue };
         match deserialize_request(&bytes) {
             Request::Insert { key, value } => {
-                if key != version_key {
-                    store.insert(key, value);
-                }
+                store.insert(key, value);
             }
             Request::Retrieve { key } => {
                 if let Some(value) = store.get(&key) {
-                    let mut bytes = key;
-                    bytes.push(b'=');
-                    bytes.extend(value);
+                    let bytes = serialize_key_value(&key, value);
                     let _ = write_bytes(&mut socket, &bytes, address);
                 }
+            }
+            Request::Version => {
+                let bytes = serialize_key_value(VERSION_KEY, VERSION_VALUE);
+                let _ = write_bytes(&mut socket, &bytes, address);
             }
         }
     }
@@ -40,7 +37,10 @@ fn write_bytes(socket: &mut UdpSocket, bytes: &[u8], address: SocketAddr) -> io:
 }
 
 fn deserialize_request(bytes: &[u8]) -> Request {
-    match bytes.iter().position(|b| *b == b'=') {
+    if bytes == VERSION_KEY {
+        return Request::Version;
+    }
+    match bytes.iter().position(|b| *b == KEY_VALUE_DELIMITER) {
         Some(index) => Request::Insert {
             key: bytes[..index].to_vec(),
             value: bytes[index + 1..].to_vec(),
@@ -51,7 +51,21 @@ fn deserialize_request(bytes: &[u8]) -> Request {
     }
 }
 
+fn serialize_key_value(key: &[u8], value: &[u8]) -> Vec<u8> {
+    let mut bytes = key.to_vec();
+    bytes.push(KEY_VALUE_DELIMITER);
+    bytes.extend(value);
+    bytes
+}
+
 enum Request {
     Insert { key: Vec<u8>, value: Vec<u8> },
     Retrieve { key: Vec<u8> },
+    Version,
 }
+
+const VERSION_KEY: &[u8; 7] = b"version";
+
+const VERSION_VALUE: &[u8; 3] = b"1.0";
+
+const KEY_VALUE_DELIMITER: u8 = b'=';
