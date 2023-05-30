@@ -26,16 +26,19 @@ fn main() -> io::Result<()> {
 
 fn handle_connection(mut reader: BufReader<TcpStream>, mut stream: TcpStream) -> io::Result<()> {
     loop {
-        let request = read_request(&mut reader)?;
+        let Some(request) = read_request(&mut reader)? else { return Ok(()) };
         let request = tamper(&request);
         stream.write_all(&request)?;
     }
 }
 
-fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<Vec<u8>> {
+fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Vec<u8>>> {
     let mut buffer = Vec::new();
-    reader.read_until(EOR, &mut buffer)?;
-    Ok(buffer)
+    let n = reader.read_until(EOR, &mut buffer)?;
+    if n == 0 {
+        return Ok(None);
+    }
+    Ok(Some(buffer))
 }
 
 fn tamper(request: &[u8]) -> Vec<u8> {
@@ -45,7 +48,7 @@ fn tamper(request: &[u8]) -> Vec<u8> {
         .split(|b| *b == b' ')
         .map(|w| {
             if is_boguscoin_address(w) {
-                TONYS_ADRRESS.to_vec()
+                TONY_ADRRESS.to_vec()
             } else {
                 w.to_owned()
             }
@@ -62,6 +65,6 @@ fn is_boguscoin_address(bytes: &[u8]) -> bool {
         && bytes.iter().all(u8::is_ascii_alphanumeric)
 }
 
-const TONYS_ADRRESS: &[u8; 27] = b"7YWHMfk9JZe0LM0g1ZauHuiSxhI";
+const TONY_ADRRESS: &[u8; 27] = b"7YWHMfk9JZe0LM0g1ZauHuiSxhI";
 
 const EOR: u8 = b'\n';
