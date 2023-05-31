@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::SocketAddr;
+use std::net::UdpSocket;
 
 fn main() -> io::Result<()> {
     let mut store: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
