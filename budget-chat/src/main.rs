@@ -162,7 +162,6 @@ fn build_log_out_msg(name: &str) -> Message {
 
 fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
     let value = String::from_utf8(bytes).ok()?;
-    let value = value.replace('\r', "");
     if value.is_empty() {
         return None;
     }
@@ -178,7 +177,6 @@ fn parse_chat_msg(bytes: Vec<u8>, name: &str) -> Option<Message> {
 
 fn parse_name(bytes: Vec<u8>) -> Option<String> {
     let name = String::from_utf8(bytes).ok()?;
-    let name = name.replace('\r', "");
     if name.is_empty() {
         return None;
     }
