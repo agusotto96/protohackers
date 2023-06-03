@@ -50,17 +50,18 @@ fn read_msg(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Vec<u8>>> {
     if n == 0 {
         return Ok(None);
     }
+    msg.pop();
     Ok(Some(msg))
 }
 
 fn write_msg(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
-    stream.write_all(msg)
+    let mut bytes = msg.to_vec();
+    bytes.push(b'\n');
+    stream.write_all(&bytes)
 }
 
 fn tamper_msg(msg: &[u8]) -> Vec<u8> {
-    let msg = &msg[..msg.len() - 1];
-    let mut msg = msg
-        .split(|b| *b == b' ')
+    msg.split(|b| *b == b' ')
         .map(|w| {
             if is_boguscoin_address(w) {
                 TONY_BOGUSCOIN_ADRRESS
@@ -69,9 +70,7 @@ fn tamper_msg(msg: &[u8]) -> Vec<u8> {
             }
         })
         .collect::<Vec<&[u8]>>()
-        .join(&b' ');
-    msg.push(b'\n');
-    msg
+        .join(&b' ')
 }
 
 fn is_boguscoin_address(word: &[u8]) -> bool {
