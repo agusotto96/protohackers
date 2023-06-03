@@ -6,68 +6,72 @@ use std::net::TcpListener;
 use std::net::TcpStream;
 use std::thread::spawn;
 
+const CHAT_ADDRESS: &str = "chat.protohackers.com:16963";
+
+const TONY_BOGUSCOIN_ADRRESS: &[u8; 27] = b"7YWHMfk9JZe0LM0g1ZauHuiSxhI";
+
 fn main() -> io::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:8080")?;
     for stream in listener.incoming().flatten() {
         spawn(|| {
-            let Ok(reader) = stream.try_clone().map(BufReader::new) else { return };
-            let Ok(chat_stream) = TcpStream::connect("chat.protohackers.com:16963") else { return };
-            let Ok(chat_reader) = chat_stream.try_clone().map(BufReader::new) else { return };
-            spawn(|| {
-                let _ = handle_connection(reader, chat_stream);
-            });
-            spawn(|| {
-                let _ = handle_connection(chat_reader, stream);
-            });
+            let _ = handle_connection(stream);
         });
     }
     Ok(())
 }
 
-fn handle_connection(mut reader: BufReader<TcpStream>, mut stream: TcpStream) -> io::Result<()> {
-    loop {
-        let Some(request) = read_request(&mut reader)? else {
-            stream.shutdown(std::net::Shutdown::Both)?;
-            return Ok(());
-        };
-        let request = tamper(&request);
-        stream.write_all(&request)?;
-    }
+fn handle_connection(stream: TcpStream) -> io::Result<()> {
+    let chat_stream = TcpStream::connect(CHAT_ADDRESS)?;
+    let chat_reader = chat_stream.try_clone().map(BufReader::new)?;
+    let reader = stream.try_clone().map(BufReader::new)?;
+    spawn(|| {
+        let _ = intercept_msg(reader, chat_stream);
+    });
+    spawn(|| {
+        let _ = intercept_msg(chat_reader, stream);
+    });
+    Ok(())
 }
 
-fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Vec<u8>>> {
-    let mut buffer = Vec::new();
-    let n = reader.read_until(EOR, &mut buffer)?;
+fn intercept_msg(mut reader: BufReader<TcpStream>, mut stream: TcpStream) -> io::Result<()> {
+    loop {
+        let Ok(Some(msg)) = read_msg(&mut reader) else { break };
+        let msg = tamper_msg(&msg);
+        let Ok(()) = stream.write_all(&msg) else { break };
+    }
+    stream.shutdown(std::net::Shutdown::Both)?;
+    Ok(())
+}
+
+fn read_msg(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Vec<u8>>> {
+    let mut msg = Vec::new();
+    let n = reader.read_until(b'\n', &mut msg)?;
     if n == 0 {
         return Ok(None);
     }
-    Ok(Some(buffer))
+    Ok(Some(msg))
 }
 
-fn tamper(request: &[u8]) -> Vec<u8> {
-    let mut request = request.to_vec();
-    request.pop();
-    let mut request = request
+fn tamper_msg(msg: &[u8]) -> Vec<u8> {
+    let mut msg = msg.to_vec();
+    msg.pop();
+    let mut msg = msg
         .split(|b| *b == b' ')
         .map(|w| {
             if is_boguscoin_address(w) {
-                TONY_ADRRESS.to_vec()
+                TONY_BOGUSCOIN_ADRRESS.to_vec()
             } else {
                 w.to_owned()
             }
         })
         .collect::<Vec<Vec<u8>>>()
         .join(&b' ');
-    request.push(b'\n');
-    request
+    msg.push(b'\n');
+    msg
 }
 
-fn is_boguscoin_address(bytes: &[u8]) -> bool {
-    bytes.starts_with(b"7")
-        && (bytes.len() >= 26 && bytes.len() <= 35)
-        && bytes.iter().all(u8::is_ascii_alphanumeric)
+fn is_boguscoin_address(word: &[u8]) -> bool {
+    word.starts_with(b"7")
+        && (word.len() >= 26 && word.len() <= 35)
+        && word.iter().all(u8::is_ascii_alphanumeric)
 }
-
-const TONY_ADRRESS: &[u8; 27] = b"7YWHMfk9JZe0LM0g1ZauHuiSxhI";
-
-const EOR: u8 = b'\n';
