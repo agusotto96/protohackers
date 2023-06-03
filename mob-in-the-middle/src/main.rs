@@ -26,15 +26,15 @@ fn handle_connection(stream: TcpStream) -> io::Result<()> {
     let chat_reader = chat_stream.try_clone().map(BufReader::new)?;
     let reader = stream.try_clone().map(BufReader::new)?;
     spawn(|| {
-        let _ = intercept_msg(reader, chat_stream);
+        let _ = intercept_msgs(reader, chat_stream);
     });
     spawn(|| {
-        let _ = intercept_msg(chat_reader, stream);
+        let _ = intercept_msgs(chat_reader, stream);
     });
     Ok(())
 }
 
-fn intercept_msg(mut reader: BufReader<TcpStream>, mut stream: TcpStream) -> io::Result<()> {
+fn intercept_msgs(mut reader: BufReader<TcpStream>, mut stream: TcpStream) -> io::Result<()> {
     loop {
         let Ok(Some(msg)) = read_msg(&mut reader) else { break };
         let msg = tamper_msg(&msg);
