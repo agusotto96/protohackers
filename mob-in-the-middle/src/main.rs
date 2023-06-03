@@ -59,7 +59,8 @@ fn write_msg(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
 
 fn tamper_msg(msg: &[u8]) -> Vec<u8> {
     let msg = &msg[..msg.len() - 1];
-    msg.split(|b| *b == b' ')
+    let mut msg = msg
+        .split(|b| *b == b' ')
         .map(|w| {
             if is_boguscoin_address(w) {
                 TONY_BOGUSCOIN_ADRRESS
@@ -68,7 +69,9 @@ fn tamper_msg(msg: &[u8]) -> Vec<u8> {
             }
         })
         .collect::<Vec<&[u8]>>()
-        .join(&b' ')
+        .join(&b' ');
+    msg.push(b'\n');
+    msg
 }
 
 fn is_boguscoin_address(word: &[u8]) -> bool {
