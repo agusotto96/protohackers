@@ -1,4 +1,3 @@
-use std::env::args;
 use std::io;
 use std::io::BufRead;
 use std::io::BufReader;
@@ -10,11 +9,10 @@ use std::thread::spawn;
 
 const CHAT_ADDRESS: &str = "chat.protohackers.com:16963";
 
-const TONY_BOGUSCOIN_ADRRESS: &str = "7YWHMfk9JZe0LM0g1ZauHuiSxhI";
+const TONY_BOGUSCOIN_ADRRESS: &[u8; 27] = b"7YWHMfk9JZe0LM0g1ZauHuiSxhI";
 
 fn main() -> io::Result<()> {
-    let address = args().nth(1).unwrap_or("0.0.0.0:8080".into());
-    let listener = TcpListener::bind(address)?;
+    let listener = TcpListener::bind("0.0.0.0:8080")?;
     for stream in listener.incoming().flatten() {
         spawn(|| {
             let _ = handle_connection(stream);
@@ -46,22 +44,22 @@ fn intercept_msg(mut reader: BufReader<TcpStream>, mut stream: TcpStream) -> io:
     Ok(())
 }
 
-fn read_msg(reader: &mut BufReader<TcpStream>) -> io::Result<Option<String>> {
-    let mut msg = String::new();
-    let n = reader.read_line(&mut msg)?;
+fn read_msg(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Vec<u8>>> {
+    let mut msg = Vec::new();
+    let n = reader.read_until(b'\n', &mut msg)?;
     if n == 0 {
         return Ok(None);
     }
     Ok(Some(msg))
 }
 
-fn write_msg(stream: &mut TcpStream, msg: &str) -> io::Result<()> {
-    stream.write_all(msg.as_bytes())
+fn write_msg(stream: &mut TcpStream, msg: &[u8]) -> io::Result<()> {
+    stream.write_all(msg)
 }
 
-fn tamper_msg(msg: &str) -> String {
+fn tamper_msg(msg: &[u8]) -> Vec<u8> {
     let msg = &msg[..msg.len() - 1];
-    msg.split_ascii_whitespace()
+    msg.split(|b| *b == b' ')
         .map(|w| {
             if is_boguscoin_address(w) {
                 TONY_BOGUSCOIN_ADRRESS
@@ -69,12 +67,12 @@ fn tamper_msg(msg: &str) -> String {
                 w
             }
         })
-        .collect::<Vec<&str>>()
-        .join(" ")
+        .collect::<Vec<&[u8]>>()
+        .join(&b' ')
 }
 
-fn is_boguscoin_address(word: &str) -> bool {
-    word.starts_with('7')
+fn is_boguscoin_address(word: &[u8]) -> bool {
+    word.starts_with(b"7")
         && (word.len() >= 26 && word.len() <= 35)
-        && word.chars().all(char::is_alphanumeric)
+        && word.iter().all(u8::is_ascii_alphanumeric)
 }
