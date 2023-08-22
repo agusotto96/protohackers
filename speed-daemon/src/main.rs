@@ -19,7 +19,7 @@ fn handle_connection(stream: TcpStream) -> Option<()> {
     let mut client = Client::default();
     loop {
         let Some(request) = deserialize_request(&mut bytes) else {
-            send_error_msg(&mut write_stream, "")?;
+            send_error_msg(&mut write_stream, "bad message type")?;
             None?
         };
         match request {
@@ -27,7 +27,7 @@ fn handle_connection(stream: TcpStream) -> Option<()> {
                 if client.i_am_camera.is_none() && client.i_am_dispatcher.is_none() {
                     client.i_am_camera = Some(i_am_camera);
                 } else {
-                    send_error_msg(&mut write_stream, "")?;
+                    send_error_msg(&mut write_stream, "bad id")?;
                     None?;
                 }
             }
@@ -36,7 +36,7 @@ fn handle_connection(stream: TcpStream) -> Option<()> {
                     client.i_am_dispatcher = Some(i_am_dispatcher);
                     todo!()
                 } else {
-                    send_error_msg(&mut write_stream, "")?;
+                    send_error_msg(&mut write_stream, "bad id")?;
                     None?;
                 }
             }
@@ -46,13 +46,13 @@ fn handle_connection(stream: TcpStream) -> Option<()> {
                     let write_stream = write_stream.try_clone().ok()?;
                     spawn(move || handle_want_heartbeat(write_stream, want_heartbeat));
                 } else {
-                    send_error_msg(&mut write_stream, "")?;
+                    send_error_msg(&mut write_stream, "already heartbeat")?;
                     None?;
                 }
             }
             Request::Plate(plate) => {
                 let Some(i_am_camera) = client.i_am_camera else {
-                    send_error_msg(&mut write_stream, "")?;
+                    send_error_msg(&mut write_stream, "not a camera")?;
                     None?
                 };
                 todo!()
